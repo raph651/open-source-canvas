@@ -58,7 +58,7 @@ interface WorkspaceState {
   deleteTemplate: (id: string) => void;
   addAsset: (asset: Omit<CanvasAsset, 'id' | 'createdAt'>) => void;
   removeAsset: (id: string) => void;
-  saveVersion: (label?: string, silent?: boolean) => void;
+  saveVersion: (label?: string, silent?: boolean, canvasId?: string) => void;
   restoreVersion: (id: string) => void;
   deleteVersion: (id: string) => void;
   duplicateCanvas: (id: string) => void;
@@ -212,22 +212,31 @@ function cloneDoc(doc: CanvasDoc): CanvasDoc {
     : (JSON.parse(JSON.stringify(doc)) as CanvasDoc);
 }
 const activeProviders = new Set<Provider>();
+let runningCanvasId: string | null = null;
 const MAX_PARALLEL_RUNS = 2;
 
 function activeDoc(state: WorkspaceState): CanvasDoc | null {
   return state.activeId ? state.docs[state.activeId] ?? null : null;
 }
 
+function withDoc(
+  state: WorkspaceState,
+  canvasId: string,
+  updater: (doc: CanvasDoc) => CanvasDoc,
+): Partial<WorkspaceState> {
+  const doc = state.docs[canvasId];
+  if (!doc) return {};
+  return {
+    docs: { ...state.docs, [canvasId]: { ...updater(doc), updatedAt: Date.now() } },
+    savedAt: Date.now(),
+  };
+}
+
 function withActiveDoc(
   state: WorkspaceState,
   updater: (doc: CanvasDoc) => CanvasDoc,
 ): Partial<WorkspaceState> {
-  const doc = activeDoc(state);
-  if (!doc) return {};
-  return {
-    docs: { ...state.docs, [doc.id]: { ...updater(doc), updatedAt: Date.now() } },
-    savedAt: Date.now(),
-  };
+  return state.activeId ? withDoc(state, state.activeId, updater) : {};
 }
 
 function upstreamIds(doc: CanvasDoc, start: string[]): Set<string> {
@@ -477,9 +486,9 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
     get().showToast('Asset removed from the shelf');
   },
 
-  saveVersion: (label = 'Manual snapshot', silent = false) => {
+  saveVersion: (label = 'Manual snapshot', silent = false, canvasId) => {
     const state = get();
-    const doc = activeDoc(state);
+    const doc = canvasId === undefined ? activeDoc(state) : state.docs[canvasId];
     if (!doc) return;
     const previous = state.versions.find((version) => version.docId === doc.id);
     if (
@@ -1375,15 +1384,24 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
       settings.openConnection();
       return;
     }
+    const canvasId = doc.id;
+    const updateRunNode = (id: string, patch: Partial<CanvasNodeData>) =>
+      set((state) => withDoc(state, canvasId, (currentDoc) => ({
+        ...currentDoc,
+        nodes: currentDoc.nodes.map((node) => node.id === id
+          ? { ...node, data: { ...node.data, ...patch, ...(node.data.kind === 'model' ? { touched: true } : {}) } }
+          : node),
+      })));
     const provider = getRuntimeProvider();
     activeProviders.add(provider);
+    runningCanvasId = canvasId;
     const token = ++runToken;
     set({ running: true, runLabel: `0 / ${modelNodes.length} renders` });
     for (const node of modelNodes) {
       const modelId = node.data.model;
       if (!modelId) continue;
       set((current) =>
-        withActiveDoc(current, (currentDoc) => ({
+        withDoc(current, canvasId, (currentDoc) => ({
           ...currentDoc,
           nodes: currentDoc.nodes.map((item) =>
             item.id === node.id
@@ -1414,14 +1432,14 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
 
     const executeNode = async (nodeId: string): Promise<boolean> => {
       if (token !== runToken) return false;
-      const live = activeDoc(get());
+      const live = get().docs[canvasId];
       if (!live) return false;
       const current = live.nodes.find((item) => item.id === nodeId);
       if (!current) return false;
       const deps = dependencies.get(nodeId) ?? new Set<string>();
       if ([...deps].some((dep) => failedIds.has(dep))) {
         lastError = 'An upstream node failed.';
-        get().updateNodeData(nodeId, { status: 'error', error: lastError });
+        updateRunNode(nodeId, { status: 'error', error: lastError });
         get().showToast(lastError);
         return false;
       }
@@ -1429,7 +1447,7 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
       // A local model whose files ComfyUI cannot see is not enabled yet: say what to install instead of failing mid-run.
       if (model.install && !STATIC_DEMO && useSettingsStore.getState().installed[model.id] === false) {
         lastError = `${model.name} is not installed yet.`;
-        get().updateNodeData(current.id, { status: 'error', error: lastError });
+        updateRunNode(current.id, { status: 'error', error: lastError });
         useSettingsStore.getState().openInstall(model.id);
         return false;
       }
@@ -1458,11 +1476,11 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
         )?.data.previewUrl;
       if (!prompt && !hasReference) {
         lastError = 'Connect a prompt or reference first.';
-        get().updateNodeData(current.id, { status: 'error', error: lastError });
+        updateRunNode(current.id, { status: 'error', error: lastError });
         return false;
       }
 
-      get().updateNodeData(current.id, { status: 'running', error: undefined });
+      updateRunNode(current.id, { status: 'running', error: undefined });
       let result;
       try {
         result = await provider.generate({
@@ -1487,25 +1505,28 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
         if (token !== runToken) return false;
         const message = error instanceof Error ? error.message : String(error);
         lastError = message;
-        get().updateNodeData(current.id, { status: 'error', error: message });
+        updateRunNode(current.id, { status: 'error', error: message });
         get().showToast(message);
         return false;
       }
       if (token !== runToken) return false;
 
-      // Every render stays in the strip, newest first, so restoring an older one never loses the latest.
+      const completedNode = get().docs[canvasId]?.nodes.find((node) => node.id === current.id);
+      if (!completedNode) return false;
+
+      // Every render stays in the strip, newest first, including selections made while rendering.
       const seenUrls = new Set<string>();
       const renderHistory = [
         { url: result.url, kind: result.kind, at: Date.now(), seed: result.seed },
         ...(result.alternates ?? []).map((item) => ({ url: item.url, kind: item.kind, at: Date.now() - 1, seed: item.seed })),
-        ...(current.data.outputUrl
-          ? [{ url: current.data.outputUrl, kind: current.data.outputKind ?? result.kind, at: current.data.lastRun ?? Date.now(), seed: current.data.outputSeed }]
+        ...(completedNode.data.outputUrl
+          ? [{ url: completedNode.data.outputUrl, kind: completedNode.data.outputKind ?? result.kind, at: completedNode.data.lastRun ?? Date.now(), seed: completedNode.data.outputSeed }]
           : []),
-        ...(current.data.outputHistory ?? []),
+        ...(completedNode.data.outputHistory ?? []),
       ]
         .filter((item) => !seenUrls.has(item.url) && seenUrls.add(item.url))
         .slice(0, 12);
-      get().updateNodeData(current.id, {
+      updateRunNode(current.id, {
         status: 'done',
         outputUrl: result.url,
         outputKind: result.kind,
@@ -1517,7 +1538,7 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
       get().addAsset({
         url: result.url,
         kind: result.kind === 'video' ? 'video' : 'image',
-        name: `${model.name} · ${current.data.title}`,
+        name: `${model.name} · ${completedNode.data.title}`,
         source: 'generated',
       });
       // the run time of a real render, shown on the Generate button and the Models page
@@ -1551,8 +1572,9 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
 
     activeProviders.delete(provider);
     if (token !== runToken) return;
+    runningCanvasId = null;
     set({ running: false, runLabel: '' });
-    if (completed > 0) get().saveVersion('Render complete', true);
+    if (completed > 0) get().saveVersion('Render complete', true, canvasId);
     get().showToast(
       completed === 0
         ? lastError ?? 'Nothing rendered — check your prompts'
@@ -1561,13 +1583,15 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
   },
 
   cancelRun: () => {
+    const canvasId = runningCanvasId;
+    runningCanvasId = null;
     for (const active of activeProviders) {
       void active.cancel?.().catch(() => undefined);
     }
     activeProviders.clear();
     runToken += 1;
-    set((state) =>
-      withActiveDoc(state, (doc) => ({
+    if (canvasId) set((state) =>
+      withDoc(state, canvasId, (doc) => ({
         ...doc,
         nodes: doc.nodes.map((node) =>
           node.data.status === 'running' || node.data.status === 'queued'
