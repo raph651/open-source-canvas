@@ -29,6 +29,7 @@ import {
   History as HistoryIcon,
   ImagePlus,
   LayoutTemplate,
+  ListOrdered,
   LoaderCircle,
   Map as MapIcon,
   MapPin,
@@ -51,6 +52,8 @@ import {
 import { Logo } from './Logo';
 import { AddNodePanel } from './AddNodePanel';
 import { AssetsPanel } from './AssetsPanel';
+import { QueuePanel } from './QueuePanel';
+import { useComfyQueue, useComfyQueueSync } from '../store/useComfyQueue';
 import { VersionPanel } from './VersionPanel';
 import { Inspector } from './Inspector';
 import { GenerationPanel } from './GenerationPanel';
@@ -139,6 +142,11 @@ function EditorCanvas() {
   const run = useCanvasStore((state) => state.run);
   const cancelRun = useCanvasStore((state) => state.cancelRun);
   const running = useCanvasStore((state) => state.running);
+  // ComfyUI's queue and live step progress, for the Queue button and panel
+  useComfyQueueSync();
+  const [queueOpen, setQueueOpen] = useState(false);
+  const queueCount = useComfyQueue((state) => state.jobs.length);
+  const queueBusy = useComfyQueue((state) => state.jobs.some((job) => job.status === 'running'));
   const roomId = useRoomStore((state) => state.roomId);
   const peers = useRoomStore((state) => state.peers);
   const roomConnected = useRoomStore((state) => state.connected);
@@ -1429,6 +1437,17 @@ function EditorCanvas() {
           <div className="canvas-topbar__right">
             <button
               type="button"
+              className="comfy-status"
+              onClick={() => { setQueueOpen((value) => !value); setVersionsOpen(false); setAssetsOpen(false); }}
+              title="ComfyUI queue: progress and cancel"
+              aria-expanded={queueOpen}
+            >
+              {queueBusy ? <LoaderCircle size={13} className="spin" /> : <ListOrdered size={13} />}
+              <span>Queue</span>
+              {queueCount > 0 && <span className="queue-count">{queueCount}</span>}
+            </button>
+            <button
+              type="button"
               className={`comfy-status ${!useComfy ? 'is-demo' : connection === 'online' ? 'is-online' : connection === 'offline' ? 'is-offline' : ''}`}
               onClick={openConnection}
               title={!useComfy ? 'Demo mode — click to connect ComfyUI' : connection === 'online' ? 'ComfyUI connected' : 'ComfyUI not connected — click to configure'}
@@ -1604,6 +1623,8 @@ function EditorCanvas() {
             {selectedNode?.data.kind === 'model' ? <GenerationPanel /> : <Inspector />}
           </div>
         )}
+
+        {queueOpen && <QueuePanel onClose={() => setQueueOpen(false)} />}
 
         {versionsOpen && (
           <VersionPanel onClose={() => setVersionsOpen(false)} />
