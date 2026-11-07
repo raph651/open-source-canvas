@@ -21,9 +21,11 @@ import {
   Plus,
   Sparkles,
   Ungroup,
+  X,
 } from 'lucide-react';
 import { ASPECTS, MODELS, MODEL_BY_ID, NODE_META } from '../data';
 import { useCanvasStore } from '../store/useCanvasStore';
+import { useComfyQueue } from '../store/useComfyQueue';
 import { fileToNodeMedia } from '../lib/media';
 import type { CanvasNode, ModelId } from '../types';
 import { Artwork } from './Artwork';
@@ -70,6 +72,8 @@ export function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
   const assets = useCanvasStore((state) => state.assets);
   const run = useCanvasStore((state) => state.run);
   const running = useCanvasStore((state) => state.running);
+  const progress = useComfyQueue((state) => state.nodeProgress[id]);
+  const cancelNode = useComfyQueue((state) => state.cancelNode);
   const addAsset = useCanvasStore((state) => state.addAsset);
   const showToast = useCanvasStore((state) => state.showToast);
   const ungroupSelection = useCanvasStore((state) => state.ungroupSelection);
@@ -445,7 +449,7 @@ export function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
             ) : (
               <span className="node__status-dot" />
             )}
-            {STATUS_LABEL[status]}
+            {status === 'running' && progress?.stage === 'queued' ? 'Queued' : STATUS_LABEL[status]}
           </span>
         )}
       </div>
@@ -487,7 +491,7 @@ export function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
               <div className="node__render node__render--running">
                 <span className="node__orb" style={{ background: model?.accent }} />
                 <LoaderCircle size={18} className="spin" />
-                <strong>{status === 'queued' ? 'Queued' : 'Rendering'}</strong>
+                <strong>{status === 'queued' || progress?.stage === 'queued' ? 'Queued' : 'Rendering'}</strong>
                 <small>{model?.name} · {model?.family}</small>
               </div>
             ) : (
@@ -495,6 +499,22 @@ export function CanvasNodeView({ id, data, selected }: NodeProps<CanvasNode>) {
                 <span className="node__watermark" aria-hidden="true">
                   <Logo compact />
                 </span>
+              </div>
+            )}
+
+            {(status === 'running' || status === 'queued') && (
+              <div className="node__progress nodrag" onPointerDown={(event) => event.stopPropagation()}>
+                <div className={progress?.percent === undefined ? 'queue-bar queue-bar--busy' : 'queue-bar'}>
+                  <span style={progress?.percent === undefined ? undefined : { width: `${Math.round(progress.percent * 100)}%` }} />
+                </div>
+                <div className="node__progress-row">
+                  <span title={progress?.detail}>{progress?.detail ?? (status === 'queued' ? 'Waiting for its turn' : 'Starting')}</span>
+                  {status === 'running' && (
+                    <button type="button" onClick={() => cancelNode(id)} title="Cancel this render" aria-label="Cancel this render">
+                      <X size={11} />
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 

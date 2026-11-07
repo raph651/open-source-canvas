@@ -5,6 +5,9 @@ All notable changes to Open Source Canvas. Newest first. The format follows [Kee
 ## [Unreleased]
 
 ### Fixed
+- **A render no longer spins forever when ComfyUI closes.** If ComfyUI cannot be reached for 20 seconds during a render, or forgets the job (it restarted, or the job was removed elsewhere), the node fails with a message saying so instead of waiting for the timeout.
+- **Long renders are not abandoned.** The render timeout is 90 minutes instead of 10, so big video models finish; a dead ComfyUI is caught by the check above.
+- **Failed renders say what broke.** The node shows ComfyUI's own node error (for example `KSampler: CUDA out of memory`) instead of "check the ComfyUI console".
 - **The app can connect to a stock ComfyUI again.** It sent a custom request header that ComfyUI's `--enable-cors-header` setup rejects, so the page showed "ComfyUI offline" even with ComfyUI running. The header is now only sent to our own gateway or a remote server.
 - **Reactions** now go onto the selected node. Press Reactions and the reaction rides on your cursor: click the canvas or a node to place it (the palette changes which one), or pick an emoji with a node selected to put it on that node's border. Further reactions wrap around the node clockwise.
 - **Reactions and comments can be dragged.** A reaction dropped on a node pins to it and follows it when the node moves; dropped on empty canvas it floats free.
@@ -26,6 +29,7 @@ All notable changes to Open Source Canvas. Newest first. The format follows [Kee
 
 ### Added
 - **Adding a local model** is documented in [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md).
+- **Queue, progress and cancel.** A **Queue** button in the canvas top bar opens ComfyUI's queue: the running job with its phase, step (`Rendering · step 12 of 20`), progress bar, elapsed time and **Cancel**, the waiting jobs with **Remove**, and **Cancel all**. Jobs queued from the ComfyUI page are listed too. A rendering node shows the same progress and its place in line, with an **×** that cancels just that node; a cancelled node goes back to idle instead of showing an error. Step counts come live from ComfyUI's WebSocket. On a shared server that keeps its queue private, the panel says so and nodes still show their state and can be cancelled. See [docs/COMFYUI_RUNTIME.md](docs/COMFYUI_RUNTIME.md#queue-progress-and-cancel).
 - **Reactions**: a palette of 16 (hearts in every colour, 🔥, 👍, 😂 and more). Click a placed reaction to change it; double-click it to remove it.
 - **Rename a generation**: double-click its title at the top left of the node, type a name, press Enter. The tag at the bottom left of the preview is now just an image or video icon.
 - **Local models**: Wan 2.2 TI2V 5B (text and image to video, up to 720p at 24 fps) and Pika H3 Flex. A local model whose files ComfyUI cannot see shows an INSTALL badge; picking it, or running a node that uses it, opens the files to download, the folder for each, and a Check again button. Pika H3 Flex is listed with the files from ComfyUI's guide (no custom node; ComfyUI 0.43.2 or newer for text to video) but runs from ComfyUI's own Pika H3 Flex template; this app has no workflow for it yet.
