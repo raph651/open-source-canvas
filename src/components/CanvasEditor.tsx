@@ -47,11 +47,13 @@ import {
   Undo2,
   X,
   GripHorizontal,
+  Lightbulb,
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { AddNodePanel } from './AddNodePanel';
 import { AssetsPanel } from './AssetsPanel';
 import { VersionPanel } from './VersionPanel';
+import { PromptGuide } from './PromptGuide';
 import { Inspector } from './Inspector';
 import { GenerationPanel } from './GenerationPanel';
 import { CanvasNodeView } from './CanvasNodeView';
@@ -400,6 +402,7 @@ function EditorCanvas() {
   const [dragActive, setDragActive] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const dragDepth = useRef(0);
   const [chatDraft, setChatDraft] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -1436,6 +1439,16 @@ function EditorCanvas() {
               <span className={`comfy-status__dot ${!useComfy ? 'is-demo' : connection === 'online' ? 'is-online' : connection === 'offline' ? 'is-offline' : ''}`} />
               <span>ComfyUI</span>
             </button>
+            <button
+              type="button"
+              className="comfy-status"
+              onClick={() => setGuideOpen((value) => !value)}
+              title="How to write a prompt for each model"
+              aria-expanded={guideOpen}
+            >
+              <Lightbulb size={13} />
+              <span>Prompt guide</span>
+            </button>
             <div className="canvas-action-pill">
               <div className="canvas-account">
                 <button
@@ -1607,6 +1620,14 @@ function EditorCanvas() {
 
         {versionsOpen && (
           <VersionPanel onClose={() => setVersionsOpen(false)} />
+        )}
+
+        {guideOpen && (
+          <PromptGuide
+            key={selectedNode?.data.kind === 'model' ? selectedNode.data.model : 'none'}
+            initialModel={selectedNode?.data.kind === 'model' ? selectedNode.data.model : undefined}
+            onClose={() => setGuideOpen(false)}
+          />
         )}
 
         {assetsOpen && (

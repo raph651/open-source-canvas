@@ -25,6 +25,7 @@ All notable changes to Open Source Canvas. Newest first. The format follows [Kee
 - **The Models page is simpler.** One title, grouped Local and API, the run-time estimate and a single action per model ("Use model", or "Install" when ComfyUI cannot find its files). The developer footer is replaced by a link to the guide for adding another local model.
 
 ### Added
+- **Prompt guide.** A **Prompt guide** button in the canvas top bar opens a drawer with quick prompting rules for each model: what it is good at, three or four rules, an example prompt you can copy, and common mistakes. It opens on the selected node's model, and sits on the left so the generation panel stays visible while you write. The tips live in `src/lib/promptGuide.ts`.
 - **Adding a local model** is documented in [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md).
 - **Reactions**: a palette of 16 (hearts in every colour, 🔥, 👍, 😂 and more). Click a placed reaction to change it; double-click it to remove it.
 - **Rename a generation**: double-click its title at the top left of the node, type a name, press Enter. The tag at the bottom left of the preview is now just an image or video icon.
