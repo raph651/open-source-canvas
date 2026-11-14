@@ -28,6 +28,7 @@ function setup(){
   zustand:{create:initializer=>createStore(initializer)},
   '../data':{MODELS:[model],MODEL_BY_ID:{'sd-turbo':model},NODE_META:{},TEMPLATES:[{id:'fixture',name:'Fixture',build:()=>({nodes:[],edges:[]})}],makeEdge:()=>{throw Error('Unused graph builder');}},
   '../lib/providers':{getRuntimeProvider:()=>provider},'../lib/staticDemo':{STATIC_DEMO:false},'./useSettingsStore':{useSettingsStore:{getState:()=>settings}},
+   './useComfyQueue':{beginNodeRun:()=>new AbortController().signal,endNodeRun:()=>{},abortAllNodeRuns:()=>{},useComfyQueue:{getState:()=>({setNodeProgress:()=>{}})}},
  };
  const mod={exports:{}};
  const globals={module:mod,exports:mod.exports,Error,structuredClone,crypto:{randomUUID},console,performance,localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v)},setTimeout:()=>1,clearTimeout:()=>{},require:name=>{if(name==='../lib/mentions'){const m={exports:{}};vm.runInNewContext(transpile(mentions,'mentions.ts'),{module:m,exports:m.exports},{filename:'mentions.cjs'});return m.exports;}if(!(name in modules))throw Error('Unexpected module '+name);return modules[name];}};

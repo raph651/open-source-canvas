@@ -29,6 +29,7 @@ import {
   History as HistoryIcon,
   ImagePlus,
   LayoutTemplate,
+  ListOrdered,
   LoaderCircle,
   Map as MapIcon,
   MapPin,
@@ -47,11 +48,15 @@ import {
   Undo2,
   X,
   GripHorizontal,
+  Lightbulb,
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { AddNodePanel } from './AddNodePanel';
 import { AssetsPanel } from './AssetsPanel';
+import { QueuePanel } from './QueuePanel';
+import { useComfyQueue, useComfyQueueSync } from '../store/useComfyQueue';
 import { VersionPanel } from './VersionPanel';
+import { PromptGuide } from './PromptGuide';
 import { Inspector } from './Inspector';
 import { GenerationPanel } from './GenerationPanel';
 import { CanvasNodeView } from './CanvasNodeView';
@@ -139,6 +144,11 @@ function EditorCanvas() {
   const run = useCanvasStore((state) => state.run);
   const cancelRun = useCanvasStore((state) => state.cancelRun);
   const running = useCanvasStore((state) => state.running);
+  // ComfyUI's queue and live step progress, for the Queue button and panel
+  useComfyQueueSync();
+  const [queueOpen, setQueueOpen] = useState(false);
+  const queueCount = useComfyQueue((state) => state.jobs.length);
+  const queueBusy = useComfyQueue((state) => state.jobs.some((job) => job.status === 'running'));
   const roomId = useRoomStore((state) => state.roomId);
   const peers = useRoomStore((state) => state.peers);
   const roomConnected = useRoomStore((state) => state.connected);
@@ -400,6 +410,7 @@ function EditorCanvas() {
   const [dragActive, setDragActive] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const dragDepth = useRef(0);
   const [chatDraft, setChatDraft] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -1429,12 +1440,33 @@ function EditorCanvas() {
           <div className="canvas-topbar__right">
             <button
               type="button"
+              className="comfy-status"
+              onClick={() => { setQueueOpen((value) => !value); setVersionsOpen(false); setAssetsOpen(false); }}
+              title="ComfyUI queue: progress and cancel"
+              aria-expanded={queueOpen}
+            >
+              {queueBusy ? <LoaderCircle size={13} className="spin" /> : <ListOrdered size={13} />}
+              <span>Queue</span>
+              {queueCount > 0 && <span className="queue-count">{queueCount}</span>}
+            </button>
+            <button
+              type="button"
               className={`comfy-status ${!useComfy ? 'is-demo' : connection === 'online' ? 'is-online' : connection === 'offline' ? 'is-offline' : ''}`}
               onClick={openConnection}
               title={!useComfy ? 'Demo mode — click to connect ComfyUI' : connection === 'online' ? 'ComfyUI connected' : 'ComfyUI not connected — click to configure'}
             >
               <span className={`comfy-status__dot ${!useComfy ? 'is-demo' : connection === 'online' ? 'is-online' : connection === 'offline' ? 'is-offline' : ''}`} />
               <span>ComfyUI</span>
+            </button>
+            <button
+              type="button"
+              className="comfy-status"
+              onClick={() => setGuideOpen((value) => !value)}
+              title="How to write a prompt for each model"
+              aria-expanded={guideOpen}
+            >
+              <Lightbulb size={13} />
+              <span>Prompt guide</span>
             </button>
             <div className="canvas-action-pill">
               <div className="canvas-account">
@@ -1605,8 +1637,18 @@ function EditorCanvas() {
           </div>
         )}
 
+        {queueOpen && <QueuePanel onClose={() => setQueueOpen(false)} />}
+
         {versionsOpen && (
           <VersionPanel onClose={() => setVersionsOpen(false)} />
+        )}
+
+        {guideOpen && (
+          <PromptGuide
+            key={selectedNode?.data.kind === 'model' ? selectedNode.data.model : 'none'}
+            initialModel={selectedNode?.data.kind === 'model' ? selectedNode.data.model : undefined}
+            onClose={() => setGuideOpen(false)}
+          />
         )}
 
         {assetsOpen && (

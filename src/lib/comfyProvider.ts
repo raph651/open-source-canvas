@@ -22,10 +22,11 @@ interface ComfyProviderConfig {
 }
 
 function mapProgress(progress: ComfyProgress): ProviderProgress {
-  if (progress.stage === 'queued') return { stage: 'queued', detail: 'Queued in ComfyUI' };
-  if (progress.stage === 'done') return { stage: 'done', detail: 'Fetching output' };
-  if (progress.stage === 'downloading') return { stage: 'running', detail: 'Downloading output' };
-  return { stage: 'running', detail: 'ComfyUI is rendering' };
+  const { promptId, percent } = progress;
+  if (progress.stage === 'queued') return { stage: 'queued', promptId, detail: progress.detail ?? 'Waiting in queue' };
+  if (progress.stage === 'done') return { stage: 'done', promptId, percent: 1, detail: 'Fetching output' };
+  if (progress.stage === 'downloading') return { stage: 'running', promptId, detail: 'Downloading output' };
+  return { stage: 'running', promptId, percent, detail: progress.detail ?? 'Rendering' };
 }
 
 export class ComfyProvider implements Provider {
@@ -180,6 +181,7 @@ export class ComfyProvider implements Provider {
       const label = count > 1 ? ` (${index + 1} of ${count})` : '';
       const result = await this.client.run(build(seed), {
         signal: request.signal,
+        meta: { title: `${request.title ?? request.model.name}${label}`, model: request.model.name, nodeId: request.nodeId },
         onProgress: (progress) => {
           const mapped = mapProgress(progress);
           request.onProgress?.({ ...mapped, detail: `${mapped.detail ?? ''}${label}` });

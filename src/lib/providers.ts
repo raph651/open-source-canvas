@@ -7,7 +7,10 @@ import { getModelWrapper } from './modelWrappers';
 export interface ProviderProgress {
   stage: 'queued' | 'running' | 'done' | 'uploading';
   detail?: string;
+  /** 0..1 when the backend reports steps */
   percent?: number;
+  /** the ComfyUI job, once queued */
+  promptId?: string;
 }
 
 export interface GenerationRequest {
@@ -25,6 +28,9 @@ export interface GenerationRequest {
   referenceCount: number;
   inputImageUrl?: string;
   runIndex: number;
+  /** the canvas node and its title, shown in the ComfyUI queue */
+  nodeId?: string;
+  title?: string;
   signal?: AbortSignal;
   onProgress?: (progress: ProviderProgress) => void;
 }

@@ -1,4 +1,5 @@
 import { getClientId } from './clientId';
+import { connectLive, liveFor, markStarted, phaseLabel, SESSION_CLIENT_ID } from './comfyLive';
 
 export interface ComfyImageRef {
   filename: string;
@@ -26,6 +27,57 @@ export interface ComfyProgress {
   promptId?: string;
   detail?: string;
   percent?: number;
+}
+
+/** What the app attaches to each job it queues, so the queue can name it. Kept in ComfyUI's extra_data. */
+export interface ComfyJobMeta {
+  title?: string;
+  model?: string;
+  nodeId?: string;
+}
+
+export interface ComfyQueueJob {
+  promptId: string;
+  number: number;
+  status: 'running' | 'pending';
+  /** queued by this app (any tab), not by the ComfyUI page or another tool */
+  fromApp: boolean;
+  meta?: ComfyJobMeta;
+  /** ComfyUI node id -> class name, to name the node that is running */
+  classes: Record<string, string>;
+}
+
+/** Thrown when a job was cancelled from the app or from ComfyUI. */
+export class ComfyCancelledError extends Error {
+  constructor() {
+    super('Render cancelled');
+    this.name = 'AbortError';
+  }
+}
+
+type QueueRow = [number, string, Record<string, { class_type?: string }>, { client_id?: string; osc?: ComfyJobMeta }?];
+
+function toJob(row: QueueRow, status: ComfyQueueJob['status']): ComfyQueueJob {
+  const [number, promptId, graph, extra] = row;
+  const classes: Record<string, string> = {};
+  for (const [id, node] of Object.entries(graph ?? {})) if (node?.class_type) classes[id] = node.class_type;
+  return { promptId, number, status, fromApp: Boolean(extra?.osc), meta: extra?.osc, classes };
+}
+
+/** Pulls the node error ComfyUI stored for a failed job, so the app can say what broke instead of "check the console". */
+function failureOf(entry: ComfyHistoryEntry): { interrupted: boolean; message?: string } {
+  let interrupted = false;
+  let message: string | undefined;
+  for (const item of entry.status?.messages ?? []) {
+    if (!Array.isArray(item)) continue;
+    const [type, data] = item as [string, Record<string, unknown>];
+    if (type === 'execution_interrupted') interrupted = true;
+    if (type === 'execution_error') {
+      const node = data?.node_type ? `${String(data.node_type)}: ` : '';
+      message = `${node}${String(data?.exception_message ?? 'unknown error').trim()}`.slice(0, 400);
+    }
+  }
+  return { interrupted, message };
 }
 
 export interface ComfyConfig {
@@ -127,11 +179,11 @@ export class ComfyClient {
     }
   }
 
-  async queue(workflow: Record<string, unknown>): Promise<{ promptId: string; number?: number }> {
+  async queue(workflow: Record<string, unknown>, meta?: ComfyJobMeta): Promise<{ promptId: string; number?: number }> {
     const response = await this.request('/prompt', {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify({ prompt: workflow, client_id: `osc-${crypto.randomUUID()}` }),
+      body: JSON.stringify({ prompt: workflow, client_id: SESSION_CLIENT_ID, extra_data: { osc: meta ?? {} } }),
     });
     const data = await response.json();
     if (!data?.prompt_id) throw new Error('ComfyUI did not return a prompt_id');
@@ -146,48 +198,123 @@ export class ComfyClient {
     return response.json();
   }
 
+  /** What ComfyUI is running and what is waiting, from every client (this app, the ComfyUI page, other tools). */
+  async getQueue(): Promise<ComfyQueueJob[]> {
+    const response = await this.request('/queue', { headers: this.headers(false) });
+    const data = (await response.json()) as { queue_running?: QueueRow[]; queue_pending?: QueueRow[] };
+    const pending = (data.queue_pending ?? []).map((row) => toJob(row, 'pending')).sort((a, b) => a.number - b.number);
+    return [...(data.queue_running ?? []).map((row) => toJob(row, 'running')), ...pending];
+  }
+
+  /**
+   * Stops one job: takes it off the queue if it is waiting, interrupts it if it is running.
+   * The shared-server proxy (server/app.mjs) refuses POST /queue, so a failed delete must not skip the interrupt.
+   */
+  async cancelPrompt(promptId: string): Promise<void> {
+    await this.request('/queue', { method: 'POST', headers: this.headers(), body: JSON.stringify({ delete: [promptId] }) }).catch(() => undefined);
+    await this.interrupt(promptId);
+  }
+
   async run(
     workflow: Record<string, unknown>,
-    options: { onProgress?: (progress: ComfyProgress) => void; timeoutMs?: number; signal?: AbortSignal } = {},
+    options: {
+      onProgress?: (progress: ComfyProgress) => void;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      meta?: ComfyJobMeta;
+    } = {},
   ): Promise<ComfyRunResult> {
-    const { promptId } = await this.queue(workflow);
-    options.onProgress?.({ stage: 'queued', promptId });
+    if (options.signal?.aborted) throw new ComfyCancelledError();
+    connectLive(this.baseUrl, this.apiKey);
+    const { promptId } = await this.queue(workflow, options.meta);
+    options.onProgress?.({ stage: 'queued', promptId, detail: 'Waiting in queue' });
     const started = Date.now();
-    const timeout = options.timeoutMs ?? 10 * 60 * 1000;
+    // Big models (MiniMax H3 at 768p) can take a long time; a dead ComfyUI is caught below instead.
+    const timeout = options.timeoutMs ?? 90 * 60 * 1000;
+    const classOf = (node?: string) =>
+      node ? (workflow[node] as { class_type?: string } | undefined)?.class_type : undefined;
+    let unreachableSince = 0;
+    let missingChecks = 0;
+    let loop = 0;
 
     while (Date.now() - started < timeout) {
       if (options.signal?.aborted) {
-        await this.interrupt().catch(() => undefined);
-        throw new DOMException('ComfyUI run cancelled', 'AbortError');
+        await this.cancelPrompt(promptId).catch(() => undefined);
+        throw new ComfyCancelledError();
       }
       await sleep(800);
+      loop += 1;
       let entry: ComfyHistoryEntry | undefined;
       try {
         const history = await this.history(promptId);
         entry = history[promptId];
+        unreachableSince = 0;
       } catch (error) {
         // A private gateway refusing the key will never succeed on retry; surface it instead of polling forever.
         if (error instanceof Error && error.message.includes('is private')) throw error;
+        if (error instanceof Error && error.message.startsWith('Cannot reach')) {
+          unreachableSince ||= Date.now();
+          if (Date.now() - unreachableSince > 20_000) {
+            throw new Error('Lost the connection to ComfyUI during the render. It may have closed or crashed: check its window, start it again and rerun.');
+          }
+        }
         // The history endpoint can 404 while the job is still queued.
         continue;
       }
-      if (!entry) {
-        options.onProgress?.({ stage: 'running', promptId });
+      if (entry) {
+        if (entry.status?.status_str === 'error') {
+          const failure = failureOf(entry);
+          if (failure.interrupted || liveFor(promptId)?.interrupted) throw new ComfyCancelledError();
+          throw new Error(failure.message ? `ComfyUI error: ${failure.message}` : 'ComfyUI execution failed. Check the ComfyUI console for the node error.');
+        }
+        const outputs = this.extractOutputs(entry);
+        if (outputs.length) {
+          options.onProgress?.({ stage: 'done', promptId });
+          return { promptId, outputs };
+        }
+        if (entry.status?.completed) {
+          throw new Error('ComfyUI completed without an image/video output. Add a SaveImage or SaveVideo node.');
+        }
         continue;
       }
-      if (entry.status?.status_str === 'error') {
-        throw new Error('ComfyUI execution failed. Check the ComfyUI console for the node error.');
+
+      // Not finished: say where it is. The queue is read every few loops; step progress comes from the socket.
+      const live = liveFor(promptId);
+      if (live?.startedAt) {
+        const phase = phaseLabel(classOf(live.node));
+        const steps = live.max && live.max > 1 ? live.max : 0;
+        options.onProgress?.({
+          stage: 'running',
+          promptId,
+          percent: steps ? Math.min(1, (live.value ?? 0) / steps) : undefined,
+          detail: steps ? `${phase} · step ${live.value ?? 0} of ${steps}` : phase,
+        });
       }
-      const outputs = this.extractOutputs(entry);
-      if (outputs.length) {
-        options.onProgress?.({ stage: 'done', promptId });
-        return { promptId, outputs };
+      if (loop % 3 !== 0) continue;
+      let queue: ComfyQueueJob[];
+      try {
+        queue = await this.getQueue();
+      } catch {
+        continue;
       }
-      if (entry.status?.completed) {
-        throw new Error('ComfyUI completed without an image/video output. Add a SaveImage or SaveVideo node.');
+      const index = queue.findIndex((job) => job.promptId === promptId);
+      if (index === -1) {
+        // Gone from the queue and not in history: deleted elsewhere, or ComfyUI restarted and forgot it.
+        missingChecks += 1;
+        if (missingChecks >= 3) throw new Error('ComfyUI no longer has this job. It was removed from the queue or ComfyUI restarted.');
+        continue;
+      }
+      missingChecks = 0;
+      const job = queue[index];
+      if (job.status === 'pending') {
+        options.onProgress?.({ stage: 'queued', promptId, detail: index === 0 ? 'Next in queue' : `Waiting in queue · ${index} ahead` });
+      } else if (!live?.startedAt) {
+        // No socket (gateway) or we joined late: still say it is running.
+        markStarted(promptId);
+        options.onProgress?.({ stage: 'running', promptId, detail: 'Rendering' });
       }
     }
-    throw new Error(`ComfyUI run timed out after ${Math.round(timeout / 1000)}s`);
+    throw new Error(`ComfyUI run timed out after ${Math.round(timeout / 60000)} min`);
   }
 
   extractOutputs(entry: ComfyHistoryEntry): ComfyImageRef[] {
@@ -222,11 +349,12 @@ export class ComfyClient {
     return response.json();
   }
 
-  async interrupt(): Promise<void> {
+  /** Stops what ComfyUI is running; with a prompt id, only if that job is the one running. */
+  async interrupt(promptId?: string): Promise<void> {
     await this.request('/interrupt', {
       method: 'POST',
       headers: this.headers(),
-      body: '{}',
+      body: JSON.stringify(promptId ? { prompt_id: promptId } : {}),
     });
   }
 }
