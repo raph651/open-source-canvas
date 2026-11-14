@@ -38,6 +38,7 @@ The [live demo](https://raph651.github.io/open-source-canvas/) is for looking ar
 - **`@` references.** Write "@Avatar opens @Product" in a prompt and it points at those reference nodes.
 - **Every render kept.** Each node has a History strip; batch renders get their own seeds.
 - **Chains.** An image from one node becomes the next node's reference or first frame.
+- **Queue, progress and cancel.** A **Queue** button shows what ComfyUI is rendering and what is waiting, with the current step (`Rendering · step 12 of 20`) on the panel and on the node, and a cancel button on each job. Jobs from the ComfyUI page show up too. [How it works](docs/COMFYUI_RUNTIME.md#queue-progress-and-cancel).
 - **Teamwork.** Comments and reactions that pin to nodes, plus an optional room (`npm run room`) that syncs a board.
 - **Local first.** Boards autosave in your browser, export as JSON, and follow your light or night theme.
 
@@ -105,6 +106,8 @@ Add your own local model with [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md).
 - **The badge says offline.** ComfyUI is not running, or the dev server cannot reach it. Start ComfyUI with `--enable-cors-header`, or use `node server/app.mjs`, which proxies it, and check the base URL in the ComfyUI panel.
 - **`/prompt failed (400)` or "model not found".** A file name in the ComfyUI panel does not match a file in `models/checkpoints/` or `models/text_encoders/`. Copy the exact names.
 - **Out of memory on video.** Keep **Fast local video** on, use a shorter clip, or run it on a machine with more memory.
+- **A render looks stuck.** Open **Queue**: it shows whether the job is waiting behind another one, which step it is on and for how long. Cancel it there or with the **×** on the node. If ComfyUI closed, the node says so after about 20 seconds.
+- **A big video model crawls (minutes per step) on Windows.** The model no longer fits in VRAM, often because another app is holding some, and the NVIDIA driver quietly spills into system RAM. The GPU then reads 100 % busy at low power. Close the app holding VRAM and start ComfyUI with `--reserve-vram 2` to keep some headroom.
 - **403 from `/comfy/...` on a shared deployment.** The proxy refused a request for someone else's output, or a gateway such as Cloudflare Access blocked it. See [deploy/README.md](deploy/README.md).
 
 ## More

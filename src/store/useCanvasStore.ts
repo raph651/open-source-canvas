@@ -10,6 +10,7 @@ import {
 import { create } from 'zustand';
 import { MODELS, MODEL_BY_ID, NODE_META, TEMPLATES, makeEdge } from '../data';
 import { getRuntimeProvider, type Provider } from '../lib/providers';
+import { abortAllNodeRuns, beginNodeRun, endNodeRun, useComfyQueue } from './useComfyQueue';
 import { mentionHandle } from '../lib/mentions';
 import { STATIC_DEMO } from '../lib/staticDemo';
 import { useSettingsStore } from './useSettingsStore';
@@ -1463,9 +1464,13 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
       }
 
       get().updateNodeData(current.id, { status: 'running', error: undefined });
+      const signal = beginNodeRun(current.id);
       let result;
       try {
         result = await provider.generate({
+          nodeId: current.id,
+          title: current.data.title,
+          signal,
           model,
           prompt: prompt || current.data.title,
           strength: current.data.strength,
@@ -1480,17 +1485,27 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
           runIndex: modelNodes.findIndex((node) => node.id === nodeId),
           onProgress: (progress) => {
             if (token !== runToken) return;
+            useComfyQueue.getState().setNodeProgress(nodeId, progress);
             set({ runLabel: `${completed} / ${modelNodes.length} · ${progress.detail ?? progress.stage}` });
           },
         });
       } catch (error) {
+        endNodeRun(current.id);
         if (token !== runToken) return false;
+        // Cancelled from the node, the queue panel or ComfyUI: the node goes back to idle, it did not fail.
+        if (error instanceof Error && error.name === 'AbortError') {
+          lastError = 'Render cancelled';
+          get().updateNodeData(current.id, { status: 'idle', error: undefined });
+          get().showToast(`${current.data.title}: render cancelled`);
+          return false;
+        }
         const message = error instanceof Error ? error.message : String(error);
         lastError = message;
         get().updateNodeData(current.id, { status: 'error', error: message });
         get().showToast(message);
         return false;
       }
+      endNodeRun(current.id);
       if (token !== runToken) return false;
 
       // Every render stays in the strip, newest first, so restoring an older one never loses the latest.
@@ -1561,6 +1576,7 @@ export const useCanvasStore = create<WorkspaceState>((set, get) => ({
   },
 
   cancelRun: () => {
+    abortAllNodeRuns();
     for (const active of activeProviders) {
       void active.cancel?.().catch(() => undefined);
     }
